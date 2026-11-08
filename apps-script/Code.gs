@@ -6,8 +6,7 @@
  *
  * One-time setup (see README.md):
  *   1. Paste this file into a new Apps Script project (script.google.com).
- *   2. Run  setup()  once and allow access. The log shows the team passcode,
- *      the Drive folder and the Records sheet.
+ *   2. Run  setup()  once and allow access. The log shows the Drive folder and the Records sheet.
  *   3. Deploy ▸ New deployment ▸ Web app — Execute as: Me · Who has access: Anyone.
  *   4. Copy the Web app URL into config.js in the GitHub repository.
  */
@@ -15,6 +14,7 @@ const PROPS = PropertiesService.getScriptProperties();
 const KEEP_VERSIONS = 30;          // saved versions kept per report month (older ones are deleted for good)
 const SESSION_MIN = 15;            // auto-saves by the same person within 15 minutes count as one editing session
 const MAX_UPLOAD_MB = 25;          // largest supporting file accepted
+const LOG_HEAD = ['Timestamp', 'Report', 'Version', 'Updated by', 'Note', 'Changed items', 'Size (KB)', 'Data file'];
 
 function setup() {
   const p = PROPS.getProperties();
@@ -24,17 +24,15 @@ function setup() {
   let ss;
   if (p.SHEET_ID) ss = SpreadsheetApp.openById(p.SHEET_ID);
   else { ss = SpreadsheetApp.create('Keturah Monthly Report — Records'); DriveApp.getFileById(ss.getId()).moveTo(root); }
-  ensureSheet_(ss, 'Change Log', ['Timestamp', 'Report', 'Version', 'Saved by', 'Note', 'Size (KB)', 'Data file']);
+  const logSh = ensureSheet_(ss, 'Change Log', LOG_HEAD);
+  logSh.getRange(1, 1, 1, LOG_HEAD.length).setValues([LOG_HEAD]).setFontWeight('bold').setBackground('#EFECE5');
   ensureSheet_(ss, 'Supporting Documents', ['Timestamp', 'Report', 'Section ID', 'Section', 'File name', 'Type', 'Size (KB)', 'Uploaded by', 'Note', 'Drive link', 'File ID', 'Status', 'Status changed by', 'Status changed']);
   const s1 = ss.getSheetByName('Sheet1'); if (s1 && ss.getSheets().length > 1) ss.deleteSheet(s1);
-  const pass = p.PASSCODE || ('KR-' + Utilities.getUuid().slice(0, 8).toUpperCase());
-  PROPS.setProperties({ ROOT_ID: root.getId(), DATA_ID: data.getId(), SUPPORT_ID: sup.getId(), SHEET_ID: ss.getId(), PASSCODE: pass,
+  PROPS.setProperties({ ROOT_ID: root.getId(), DATA_ID: data.getId(), SUPPORT_ID: sup.getId(), SHEET_ID: ss.getId(),
                         ROOT_URL: root.getUrl(), SHEET_URL: ss.getUrl() });
-  Logger.log('Setup complete.\nTeam passcode: ' + pass + '\nDrive folder: ' + root.getUrl() + '\nRecords sheet: ' + ss.getUrl());
+  PROPS.deleteProperty('PASSCODE');
+  Logger.log('Setup complete (open access — no passcode).\nDrive folder: ' + root.getUrl() + '\nRecords sheet: ' + ss.getUrl());
 }
-
-/** Change the team passcode: edit the value below, then run this function once. */
-function setPasscode() { PROPS.setProperty('PASSCODE', 'CHANGE-ME'); Logger.log('Passcode updated.'); }
 
 function doGet() { return out_({ ok: true, service: 'Keturah Monthly Report', note: 'This address is used by the report page.' }); }
 
@@ -42,8 +40,7 @@ function doPost(e) {
   let q;
   try { q = JSON.parse(e.postData.contents); } catch (err) { return out_({ ok: false, error: 'bad-request' }); }
   const p = PROPS.getProperties();
-  if (!p.PASSCODE) return out_({ ok: false, error: 'not-setup' });
-  if (String(q.key || '') !== p.PASSCODE) return out_({ ok: false, error: 'auth' });
+  if (!p.SHEET_ID) return out_({ ok: false, error: 'not-setup' });
   try {
     switch (q.action) {
       case 'ping': return out_({ ok: true, folder: p.ROOT_URL || folderUrl_(p.ROOT_ID), sheet: p.SHEET_URL || sheetUrl_(p.SHEET_ID), reports: reports_() });
@@ -88,16 +85,21 @@ function save_(q, p) {
     // SESSION_MIN minutes of their previous auto-save replaces that version instead of adding another 9 MB copy
     const sameSession = auto && cur && cur.auto && cur.by === user && cur.logRow && (now - new Date(cur.at)) < SESSION_MIN * 60000;
     let logRow, saves = 1;
+    let changes = (Array.isArray(q.changes) ? q.changes : []).map(String);
+    if (sameSession) changes = (cur.changes || []).concat(changes.filter(c => (cur.changes || []).indexOf(c) < 0));
+    changes = changes.slice(0, 40).map(c => c.slice(0, 120));
+    const row = [now, id, version, user, sameSession ? 'Auto-save (' + ((Number(cur.saves) || 1) + 1) + ' saves in this session)' : String(q.note || ''),
+                 changes.join('\n') || '—', Math.round(content.length / 1024), file.getUrl()];
     if (sameSession) {
       saves = (Number(cur.saves) || 1) + 1; logRow = cur.logRow;
-      log.getRange(logRow, 1, 1, 7).setValues([[now, id, version, user, 'Auto-save (' + saves + ' saves in this session)', Math.round(content.length / 1024), file.getUrl()]]);
+      log.getRange(logRow, 1, 1, row.length).setValues([row]);
       if (cur.fileId) deleteFile_(cur.fileId);
     } else {
-      log.appendRow([now, id, version, user, String(q.note || ''), Math.round(content.length / 1024), file.getUrl()]);
+      log.appendRow(row);
       logRow = log.getLastRow();
     }
     reg[id] = { fileId: file.getId(), version: version, by: user, at: now.toISOString(), title: String(q.title || id).slice(0, 120),
-                auto: auto, saves: saves, logRow: logRow };
+                auto: auto, saves: saves, logRow: logRow, changes: changes.slice(0, 15) };
     PROPS.setProperty('REPORTS', JSON.stringify(reg));
     prune_(p.DATA_ID, id, file.getId());
     return out_({ ok: true, meta: reg[id] });

@@ -3221,22 +3221,22 @@ function liveGate(msg,opts){
   opts=opts||{}; let g=document.getElementById('liveGate');
   if(!g){ document.body.insertAdjacentHTML('beforeend','<div id="liveGate" class="live-only" role="dialog" aria-modal="true"></div>'); g=document.getElementById('liveGate'); }
   const c=window.KETURAH_LIVE||{};
-  g.innerHTML=`<div class="lg-box"><div class="eyebrow">Keturah Reserve · Monthly Project Report</div><h2>${opts.empty?'Start this report':'Team access'}</h2>
+  g.innerHTML=`<div class="lg-box"><div class="eyebrow">Keturah Reserve · Monthly Project Report</div><h2>${opts.empty?'Start this report':'Welcome'}</h2>
     ${msg?`<p class="lg-msg ${opts.err?'err':''}">${esc(msg)}</p>`:''}
     ${opts.empty?`<p>No report has been saved for <b>${esc(LIVE.report)}</b> yet. Load a report HTML file (for example last month's report or a downloaded copy) to start, then click <b>Save to team</b>.</p>
       <label class="lg-file"><input type="file" id="lgImport" accept=".html,.json,text/html,application/json"> Choose report file…</label>
       ${Object.keys(LIVE.reports).length?`<p class="small muted">Or open a saved month: ${Object.keys(LIVE.reports).sort().reverse().map(r=>`<a href="?r=${encodeURIComponent(r)}">${esc(r)}</a>`).join(' · ')}</p>`:''}`
     :`${c.apiUrl?'':`<label>Server address (web app URL)<input id="lgApi" type="url" value="${esc(LIVE.api)}" placeholder="https://script.google.com/macros/s/…/exec"></label>`}
-      <label>Team passcode<input id="lgKey" type="password" value="${esc(LIVE.key)}" autocomplete="current-password"></label>
-      <label>Your name<input id="lgUser" type="text" value="${esc(LIVE.user)}" placeholder="Shown in the Change Log"></label>
-      <div class="lg-f"><span class="small muted">Ask Grace for the team passcode.</span><button class="tb solid" id="lgGo">Open report</button></div>`}
+      <p>Enter your name once. It is recorded as <b>Updated by</b> in the Change Log for every change you make.</p>
+      <label>Your name<input id="lgUser" type="text" value="${esc(LIVE.user)}" placeholder="e.g. Mansour — Project Manager MU" autocomplete="name"></label>
+      <div class="lg-f"><span></span><button class="tb solid" id="lgGo">Open report</button></div>`}
   </div>`;
   g.hidden=false; document.body.classList.add('lv-gated');
-  const k=g.querySelector('#lgKey'); if(k) setTimeout(()=>(LIVE.key?g.querySelector('#lgGo'):k).focus(),50);
+  const k=g.querySelector('#lgUser'); if(k) setTimeout(()=>k.focus(),50);
 }
 function liveUngate(){ const g=document.getElementById('liveGate'); if(g) g.hidden=true; document.body.classList.remove('lv-gated'); }
 async function liveConnect(){
-  if(!LIVE.api||!LIVE.key||!LIVE.user) return liveGate('',{});
+  if(!LIVE.api||!LIVE.user) return liveGate('',{});
   liveBusy(true,'Connecting…');
   try{ const j=await liveCall('ping'); LIVE.links={folder:j.folder,sheet:j.sheet}; LIVE.reports=j.reports||{};
     if(!LIVE.report){ const r=Object.keys(LIVE.reports).sort().reverse()[0]; LIVE.report=r||(window.KETURAH_LIVE.reportId||''); }
@@ -3249,10 +3249,31 @@ async function liveLoad(quiet){
     if(!j.data){ LIVE.meta=null; LIVE.ready=true; D.attachments=j.attachments||[]; liveBar(); return liveGate('',{empty:true}); }
     D=j.data; D.attachments=j.attachments||[]; LIVE.meta=j.meta; LIVE.version=j.meta.version; LIVE.dirty=false; LIVE.ready=true;
     lset('kl-report',LIVE.report); history.replaceState(null,'','?r='+encodeURIComponent(LIVE.report));
-    LIVE.conflict=null; LIVE.rev=0; liveUngate(); render(); liveBar(); if(!quiet) toast(`Loaded ${LIVE.report} · version ${j.meta.version}`);
+    LIVE.conflict=null; LIVE.rev=0; liveSnap(); LIVE.attBase=(D.attachments||[]).length; liveUngate(); render(); liveBar(); if(!quiet) toast(`Loaded ${LIVE.report} · version ${j.meta.version}`);
   }catch(e){ liveBusy(false); liveGate('Could not load the report: '+e.message,{err:true}); }
 }
 let liveAutoT=null;
+const LV_LABEL={meta:'Cover & project information',categories:'Project status & KPIs',projects:'Progress by cluster / building',stakeholders:'Key stakeholders',approvals:'Authority approvals',
+  nominations:'Contract nominations',risks:'Risk register',issues:'Client decisions & open issues',ps:'Provisional sums',psNote:'Provisional sums',photos:'Site progress photos',actions:'Actions',
+  labels:'Wording / labels',permits:'Construction permits',hiddenPages:'Pages removed / restored',infraMeta:'Infrastructure information',infra:'Infrastructure',psCat:'Provisional sums',nomCat:'Procurement / engagements'};
+function liveSnap(){ const o=Object.assign({},D); delete o.attachments; delete o.savedAt; LIVE.base=JSON.parse(JSON.stringify(o)); }
+function liveChanges(){
+  if(LIVE.base===null) return [LIVE.baseNote||'Whole report loaded from a file'];
+  const B=LIVE.base||{}, out=new Set(), js=x=>JSON.stringify(x===undefined?null:x), catName2=c=>({TH:'TH',MU:'MU',INFRA:'Infrastructure',ALL:'TH/MU'}[c]||c||'');
+  Object.keys(Object.assign({},B,D)).forEach(k=>{ if(k==='attachments'||k==='savedAt') return; const a=B[k], b=D[k]; if(js(a)===js(b)) return;
+    if(k==='customPages'){ const ia={}; (a||[]).forEach(p=>ia[p.id]=p); const ib={}; (b||[]).forEach(p=>ib[p.id]=p);
+      Object.keys(Object.assign({},ia,ib)).forEach(id=>{ const pa=ia[id], pb=ib[id]; if(js(pa)===js(pb)) return; const t=(pb||pa).title||id; out.add(!pa?'Page added: '+t:!pb?'Page removed: '+t:'Page: '+t); }); return; }
+    const lab=LV_LABEL[k]||k;
+    if(Array.isArray(a)||Array.isArray(b)){ const A=a||[], Bb=b||[], cats=new Set(); const n=Math.max(A.length,Bb.length);
+      const cof=it=>it?(it.cat||it.project&&String(it.project).replace(/[-\d].*$/,'')||(it.id&&/^(TH|MU)/.test(it.id)?it.id.slice(0,2):'')):'';
+      for(let i=0;i<n;i++){ if(js(A[i])!==js(Bb[i])){ [cof(A[i]),cof(Bb[i])].forEach(c=>{ if(c) cats.add(catName2(c)); }); } }
+      if(k==='projects'){ const names=new Set(); for(let i=0;i<n;i++) if(js(A[i])!==js(Bb[i])) names.add((Bb[i]||A[i]||{}).code||''); out.add(lab+' — '+[...names].filter(Boolean).join(', ')); return; }
+      out.add(lab+(cats.size?' ('+[...cats].join(', ')+')':'')+(Bb.length!==A.length?` — ${Bb.length>A.length?'+':''}${Bb.length-A.length} item${Math.abs(Bb.length-A.length)>1?'s':''}`:'')); return; }
+    if(k==='categories'){ (b||[]).forEach((c,i)=>{ if(js(c)!==js((a||[])[i])) out.add(lab+' ('+catName2(c.id)+')'); }); return; }
+    out.add(lab); });
+  const att=(D.attachments||[]).length-(LIVE.attBase||0); if(att>0) out.add('Supporting document attached (+'+att+')'); if(att<0) out.add('Supporting document removed ('+att+')');
+  return [...out];
+}
 function liveAutoSoon(ms){ clearTimeout(liveAutoT); liveAutoT=setTimeout(()=>{ if(LIVE.dirty&&LIVE.ready&&!LIVE.conflict) liveSave('auto'); }, ms||8000); }
 async function liveSave(force){
   const auto=force==='auto'; if(auto) force=false;
@@ -3263,8 +3284,9 @@ async function liveSave(force){
   const rev=LIVE.rev||0; LIVE.saving=true; liveBar();
   if(!auto) liveBusy(true,'Saving to Google Drive…');
   try{ D.savedAt=new Date().toISOString(); const data=Object.assign({},D); delete data.attachments;
-    const j=await liveCall('save',{data,note,baseVersion:LIVE.version,force:!!force,title:(D.meta&&D.meta.reportTitle||'')+' · '+(D.meta&&D.meta.period||'')});
-    LIVE.meta=j.meta; LIVE.version=j.meta.version; LIVE.reports[LIVE.report]=j.meta; LIVE.conflict=null; LIVE.saving=false;
+    const changes=liveChanges();
+    const j=await liveCall('save',{data,note,changes,baseVersion:LIVE.version,force:!!force,title:(D.meta&&D.meta.reportTitle||'')+' · '+(D.meta&&D.meta.period||'')});
+    LIVE.meta=j.meta; LIVE.version=j.meta.version; LIVE.reports[LIVE.report]=j.meta; LIVE.conflict=null; LIVE.saving=false; liveSnap(); LIVE.attBase=(D.attachments||[]).length;
     LIVE.dirty=(LIVE.rev||0)!==rev; liveBusy(false); liveBar(); if(!auto) toast(`Saved for the team · version ${j.meta.version}`);
     try{ localStorage.removeItem(LS_KEY); }catch(e){}
     if(LIVE.dirty||LIVE.again){ LIVE.again=false; if(LIVE.dirty) liveAutoSoon(3000); }
@@ -3297,7 +3319,7 @@ function liveNewMonth(){
   if(LIVE.reports[id.trim()]){ location.search='?r='+encodeURIComponent(id.trim()); return; }
   const per=prompt('Reporting period shown in the report (e.g. November 2026):', new Date(id.trim()+'-01T00:00:00').toLocaleDateString('en-GB',{month:'long',year:'numeric'})); if(!per) return liveBar();
   if(!confirm(`Create ${id.trim()} as a copy of ${LIVE.report} (${D.meta.period})?\nSupporting files are not copied. The team then updates the figures and saves.`)) return liveBar();
-  const old=D.meta.period; D=JSON.parse(JSON.stringify(D)); D.attachments=[];
+  const old=D.meta.period; D=JSON.parse(JSON.stringify(D)); D.attachments=[]; LIVE.base=null; LIVE.baseNote='New month created as a copy of '+LIVE.report; LIVE.attBase=0;
   D.meta.period=per; if(D.meta.purpose) D.meta.purpose=String(D.meta.purpose).split(old).join(per);
   LIVE.report=id.trim(); LIVE.version=0; LIVE.meta=null; LIVE.dirty=true; history.replaceState(null,'','?r='+encodeURIComponent(LIVE.report)); lset('kl-report',LIVE.report);
   render(); liveBar(); toast('New month created — saving to Google…'); liveAutoSoon(1000);
@@ -3311,7 +3333,7 @@ function liveMenu(){
     <button class="fb-btn" id="lvReload">↻ Reload the latest team version</button>
     <button class="fb-btn" id="lvImport">⬆ Replace the content from a report file (.html / .json)</button>
     <button class="fb-btn" id="lvJson">⬇ Download the data only (.json)</button>
-    <button class="fb-btn" id="lvSignout">Sign out on this computer</button>
+    <button class="fb-btn" id="lvSignout">Change my name on this computer</button>
     <p class="small muted">Add, edit or remove pages in ✎ Edit mode, then click ☁ Save to team. Use ⎙ Export PDF for a printable copy and ⬇ Download HTML for an offline copy.</p></div>`);
 }
 function openModalHtml(eyebrow,html){ $('#mbox').innerHTML=`<div class="mh"><div><div class="eyebrow">${esc(eyebrow)}</div></div><button class="mx" data-close aria-label="Close">✕</button></div><div class="mb">${html}</div>`; $('#modal').hidden=false; }
@@ -3332,14 +3354,14 @@ if(LIVE){ const _render=render; render=function(){ _render.apply(this,arguments)
     if(t.closest('#lvSignout')){ ['kl-key','kl-user'].forEach(k=>{try{localStorage.removeItem(k);}catch(err){}}); location.reload(); }
     if(t.closest('#lgOffline')){ liveUngate(); return; }
     if(t.closest('#lgGo')){ const a=document.getElementById('lgApi'); if(a){ LIVE.api=a.value.trim(); lset('kl-api',LIVE.api); }
-      LIVE.key=(document.getElementById('lgKey').value||'').trim(); LIVE.user=(document.getElementById('lgUser').value||'').trim();
-      if(!LIVE.key||!LIVE.user) return liveGate('Please enter the passcode and your name.',{err:true}); if(!LIVE.api) return liveGate('Please enter the server address.',{err:true});
-      lset('kl-key',LIVE.key); lset('kl-user',LIVE.user); return liveConnect(); }
+      LIVE.user=(document.getElementById('lgUser').value||'').trim();
+      if(!LIVE.user) return liveGate('Please enter your name.',{err:true}); if(!LIVE.api) return liveGate('Please enter the server address.',{err:true});
+      lset('kl-user',LIVE.user); return liveConnect(); }
   },true);
   document.addEventListener('change',e=>{ const t=e.target;
     if(t.id==='lvReport'){ if(t.value==='__new') return liveNewMonth(); if(LIVE.dirty&&!confirm('You have unsaved changes. Switch month anyway?')) return liveBar(); LIVE.report=t.value; return liveLoad(); }
     if(t.id==='lgImport'&&t.files[0]){ const rd=new FileReader(); rd.onload=()=>{ try{ let txt=rd.result, obj; if(/^\s*</.test(txt)){ const m=txt.match(/<script id="report-data" type="application\/json">([\s\S]*?)<\/script>/); if(!m) throw new Error('No report data in that file.'); obj=JSON.parse(m[1]); } else obj=JSON.parse(txt);
-        if(!obj.meta||!obj.projects) throw new Error('This is not a monthly report file.'); const att=D.attachments||[]; D=obj; D.attachments=att; LIVE.dirty=true; liveUngate(); render(); liveBar(); LIVE.rev=(LIVE.rev||0)+1; toast('Report loaded — saving to Google…'); liveAutoSoon(1200); }catch(err){ alert('Could not load that file: '+err.message); } }; rd.readAsText(t.files[0]); }
+        if(!obj.meta||!obj.projects) throw new Error('This is not a monthly report file.'); const att=D.attachments||[]; LIVE.base=null; LIVE.baseNote='Whole report loaded from file: '+t.files[0].name; D=obj; D.attachments=att; LIVE.dirty=true; liveUngate(); render(); liveBar(); LIVE.rev=(LIVE.rev||0)+1; toast('Report loaded — saving to Google…'); liveAutoSoon(1200); }catch(err){ alert('Could not load that file: '+err.message); } }; rd.readAsText(t.files[0]); }
   },true);
   document.addEventListener('keydown',e=>{ if(e.key==='Enter'&&e.target.closest&&e.target.closest('#liveGate')&&e.target.tagName==='INPUT'){ e.preventDefault(); const g=document.getElementById('lgGo'); if(g) g.click(); } if((e.ctrlKey||e.metaKey)&&e.key==='s'&&LIVE.ready){ e.preventDefault(); liveSave(false); } });
   window.addEventListener('beforeunload',e=>{ if(LIVE.dirty){ e.preventDefault(); e.returnValue=''; } });

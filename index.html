@@ -3284,12 +3284,12 @@ function liveAttach(secId){
         const j=await liveCall('upload',{section:secId,sectionTitle:title,name:f.name,mime:f.type||'application/octet-stream',b64,note});
         (D.attachments=D.attachments||[]).push(j.attachment);
       }catch(e){ liveBusy(false); alert('Upload failed for '+f.name+': '+e.message); return render(); } }
-    liveBusy(false); render(); toast('Saved to Google Drive and logged in the Records sheet'); };
+    liveBusy(false); render(); autosave(); toast('Saved to Google Drive and logged in the Records sheet'); };
   inp.click();
 }
 async function liveRemoveAtt(fid){
   const a=(D.attachments||[]).find(x=>x.id===fid); if(!a||!confirm(`Remove “${a.name}” from the report?\nThe file goes to the Drive trash and the Records sheet keeps the entry marked “Removed”.`)) return;
-  liveBusy(true,'Removing…'); try{ await liveCall('remove',{fileId:fid}); D.attachments=D.attachments.filter(x=>x.id!==fid); liveBusy(false); render(); toast('Removed'); }catch(e){ liveBusy(false); alert('Could not remove: '+e.message); }
+  liveBusy(true,'Removing…'); try{ await liveCall('remove',{fileId:fid}); D.attachments=D.attachments.filter(x=>x.id!==fid); liveBusy(false); render(); autosave(); toast('Removed'); }catch(e){ liveBusy(false); alert('Could not remove: '+e.message); }
 }
 function liveNewMonth(){
   const id=prompt('New report month (format YYYY-MM, e.g. 2026-11):',''); if(!id) return liveBar();

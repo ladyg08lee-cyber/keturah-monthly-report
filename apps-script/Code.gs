@@ -12,7 +12,8 @@
  *   4. Copy the Web app URL into config.js in the GitHub repository.
  */
 const PROPS = PropertiesService.getScriptProperties();
-const KEEP_VERSIONS = 40;          // data versions kept per report (older ones go to Drive trash)
+const KEEP_VERSIONS = 30;          // saved versions kept per report month (older ones are deleted for good)
+const SESSION_MIN = 15;            // auto-saves by the same person within 15 minutes count as one editing session
 const MAX_UPLOAD_MB = 25;          // largest supporting file accepted
 
 function setup() {
@@ -27,7 +28,8 @@ function setup() {
   ensureSheet_(ss, 'Supporting Documents', ['Timestamp', 'Report', 'Section ID', 'Section', 'File name', 'Type', 'Size (KB)', 'Uploaded by', 'Note', 'Drive link', 'File ID', 'Status', 'Status changed by', 'Status changed']);
   const s1 = ss.getSheetByName('Sheet1'); if (s1 && ss.getSheets().length > 1) ss.deleteSheet(s1);
   const pass = p.PASSCODE || ('KR-' + Utilities.getUuid().slice(0, 8).toUpperCase());
-  PROPS.setProperties({ ROOT_ID: root.getId(), DATA_ID: data.getId(), SUPPORT_ID: sup.getId(), SHEET_ID: ss.getId(), PASSCODE: pass });
+  PROPS.setProperties({ ROOT_ID: root.getId(), DATA_ID: data.getId(), SUPPORT_ID: sup.getId(), SHEET_ID: ss.getId(), PASSCODE: pass,
+                        ROOT_URL: root.getUrl(), SHEET_URL: ss.getUrl() });
   Logger.log('Setup complete.\nTeam passcode: ' + pass + '\nDrive folder: ' + root.getUrl() + '\nRecords sheet: ' + ss.getUrl());
 }
 
@@ -44,7 +46,7 @@ function doPost(e) {
   if (String(q.key || '') !== p.PASSCODE) return out_({ ok: false, error: 'auth' });
   try {
     switch (q.action) {
-      case 'ping': return out_({ ok: true, folder: folderUrl_(p.ROOT_ID), sheet: sheetUrl_(p.SHEET_ID), reports: reports_() });
+      case 'ping': return out_({ ok: true, folder: p.ROOT_URL || folderUrl_(p.ROOT_ID), sheet: p.SHEET_URL || sheetUrl_(p.SHEET_ID), reports: reports_() });
       case 'load': return load_(q, p);
       case 'save': return save_(q, p);
       case 'upload': return upload_(q, p);
@@ -75,26 +77,44 @@ function save_(q, p) {
     const reg = reports_(), cur = reg[id];
     if (cur && !q.force && Number(q.baseVersion) !== Number(cur.version))
       return out_({ ok: false, error: 'conflict', current: cur });
-    const version = (cur ? Number(cur.version) : 0) + 1;
-    const stamp = Utilities.formatDate(new Date(), 'Asia/Dubai', 'yyyy-MM-dd_HHmm');
+    const version = (cur ? Number(cur.version) : 0) + 1, user = String(q.user || ''), now = new Date();
+    const auto = /^auto-save/i.test(String(q.note || ''));
+    const stamp = Utilities.formatDate(now, 'Asia/Dubai', 'yyyy-MM-dd_HHmm');
     const content = JSON.stringify(q.data);
     const file = DriveApp.getFolderById(p.DATA_ID).createFile(
       Utilities.newBlob(content, 'application/json', id + '_v' + ('00' + version).slice(-3) + '_' + stamp + '.json'));
-    reg[id] = { fileId: file.getId(), version: version, by: String(q.user || ''), at: new Date().toISOString(),
-                title: String(q.title || id).slice(0, 120) };
+    const log = SpreadsheetApp.openById(p.SHEET_ID).getSheetByName('Change Log');
+    // one editing session = one Change Log row and one stored version: an auto-save by the same person within
+    // SESSION_MIN minutes of their previous auto-save replaces that version instead of adding another 9 MB copy
+    const sameSession = auto && cur && cur.auto && cur.by === user && cur.logRow && (now - new Date(cur.at)) < SESSION_MIN * 60000;
+    let logRow, saves = 1;
+    if (sameSession) {
+      saves = (Number(cur.saves) || 1) + 1; logRow = cur.logRow;
+      log.getRange(logRow, 1, 1, 7).setValues([[now, id, version, user, 'Auto-save (' + saves + ' saves in this session)', Math.round(content.length / 1024), file.getUrl()]]);
+      if (cur.fileId) deleteFile_(cur.fileId);
+    } else {
+      log.appendRow([now, id, version, user, String(q.note || ''), Math.round(content.length / 1024), file.getUrl()]);
+      logRow = log.getLastRow();
+    }
+    reg[id] = { fileId: file.getId(), version: version, by: user, at: now.toISOString(), title: String(q.title || id).slice(0, 120),
+                auto: auto, saves: saves, logRow: logRow };
     PROPS.setProperty('REPORTS', JSON.stringify(reg));
-    SpreadsheetApp.openById(p.SHEET_ID).getSheetByName('Change Log')
-      .appendRow([new Date(), id, version, String(q.user || ''), String(q.note || ''), Math.round(content.length / 1024), file.getUrl()]);
-    prune_(p.DATA_ID, id);
+    prune_(p.DATA_ID, id, file.getId());
     return out_({ ok: true, meta: reg[id] });
   } finally { lock.releaseLock(); }
 }
 
-function prune_(folderId, id) {
+function prune_(folderId, id, keepId) {
   const files = [], it = DriveApp.getFolderById(folderId).getFiles();
-  while (it.hasNext()) { const f = it.next(); if (f.getName().indexOf(id + '_v') === 0) files.push(f); }
+  while (it.hasNext()) { const f = it.next(); if (f.getName().indexOf(id + '_v') === 0 && f.getId() !== keepId) files.push(f); }
   files.sort((a, b) => b.getDateCreated() - a.getDateCreated());
-  files.slice(KEEP_VERSIONS).forEach(f => f.setTrashed(true));
+  files.slice(KEEP_VERSIONS - 1).forEach(f => deleteFile_(f.getId()));
+}
+
+/** Deletes a superseded data file for good (Drive service), so old copies do not fill the Drive trash. */
+function deleteFile_(fileId) {
+  try { Drive.Files.remove(fileId); }
+  catch (e) { try { DriveApp.getFileById(fileId).setTrashed(true); } catch (e2) {} }
 }
 
 /* ---------------- supporting documents ---------------- */

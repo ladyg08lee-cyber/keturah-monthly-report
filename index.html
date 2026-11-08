@@ -1375,7 +1375,7 @@ section[id^="part-"]{min-height:0}
 #liveBar{display:inline-flex;align-items:center;gap:6px;margin-left:auto;margin-right:4px}
 #liveBar .lv-dot{width:9px;height:9px;border-radius:50%;background:#B5B0A6}#liveBar .lv-dot.ok{background:#2F6B4A}#liveBar .lv-dot.dirty{background:#C0602B;box-shadow:0 0 0 3px rgba(192,96,43,.2)}
 #liveBar .lv-sel{font:inherit;font-size:12px;padding:4px 6px;border:1px solid var(--line);background:#fff;border-radius:4px}
-#liveBar .lv-st{font-size:11.5px;color:var(--grey-d);white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}#liveBar .lv-st b{color:#C0602B}
+#liveBar .lv-st{font-size:11.5px;color:var(--grey-d);white-space:nowrap;max-width:300px;overflow:hidden;text-overflow:ellipsis}#liveBar .lv-st b{color:#C0602B}
 #liveGate{position:fixed;inset:0;z-index:200;background:rgba(40,38,34,.55);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:16px}
 #liveGate[hidden]{display:none}
 #liveGate .lg-box{background:#FBFAF6;border-top:4px solid #A88B5C;max-width:440px;width:100%;padding:24px 26px;box-shadow:0 20px 60px rgba(0,0,0,.3);display:flex;flex-direction:column;gap:12px}
@@ -3006,7 +3006,7 @@ function toast(msg){ let t=$('#toast'); if(!t){ t=document.createElement('div');
 
 /* ============================== persistence ============================== */
 let saveT=null;
-function autosave(){ if(LIVE){ LIVE.dirty=true; liveBar(); } clearTimeout(saveT); saveT=setTimeout(()=>{ try{ localStorage.setItem(LS_KEY, JSON.stringify(Object.assign({},D,{savedAt:new Date().toISOString(),_draft:true}))); }catch(e){} },400); }
+function autosave(){ if(LIVE){ LIVE.dirty=true; LIVE.rev=(LIVE.rev||0)+1; liveBar(); liveAutoSoon(); } clearTimeout(saveT); saveT=setTimeout(()=>{ try{ localStorage.setItem(LS_KEY, JSON.stringify(Object.assign({},D,{savedAt:new Date().toISOString(),_draft:true}))); }catch(e){} },400); }
 function download(name, content, type){
   const blob=new Blob([content],{type}); const url=URL.createObjectURL(blob);
   const a=document.createElement('a'); a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
@@ -3213,7 +3213,7 @@ function liveBar(){
   const m=LIVE.meta, reps=Object.keys(LIVE.reports||{}).sort().reverse(); if(LIVE.report&&!reps.includes(LIVE.report)) reps.unshift(LIVE.report);
   bar.innerHTML=`<span class="lv-dot ${LIVE.dirty?'dirty':LIVE.ready?'ok':''}" title="${LIVE.ready?'Connected to the team copy':'Not connected'}"></span>
     <select id="lvReport" class="lv-sel" title="Report month">${reps.map(r=>`<option value="${esc(r)}" ${r===LIVE.report?'selected':''}>${esc(r)}</option>`).join('')}<option value="__new">+ New month…</option></select>
-    <span class="lv-st">${LIVE.dirty?'<b>Unsaved changes</b>':m?`v${m.version} · ${esc(m.by||'')} · ${esc(lvDate(m.at))} ${new Date(m.at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}`:LIVE.ready?'Not saved yet':'Offline'}</span>
+    <span class="lv-st">${LIVE.conflict?`<b>${esc(LIVE.conflict.by||'Someone')} saved a newer version — click Save</b>`:LIVE.saving?'Saving to Google…':LIVE.offlineErr&&LIVE.dirty?'<b>Not saved — retrying…</b>':LIVE.dirty?'<b>Unsaved changes — saving shortly</b>':m?'✓ Saved · '+`v${m.version} · ${esc(m.by||'')} · ${esc(lvDate(m.at))} ${new Date(m.at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}`:LIVE.ready?'Not saved yet':'Offline'}</span>
     <button class="tb solid" id="lvSave" ${LIVE.ready?'':'disabled'} title="Save the report for the whole team (Google Drive) and record it in the Change Log">☁ Save to team</button>
     <button class="tb" id="lvMenu" title="Records, supporting documents and connection">☰</button>`;
 }
@@ -3243,23 +3243,34 @@ async function liveConnect(){
     await liveLoad();
   }catch(e){ liveBusy(false); liveGate(e.code==='auth'?'That passcode was not accepted.':e.code==='not-setup'?'The server is not set up yet — run setup() in Apps Script.':'Could not reach the server: '+e.message,{err:true}); }
 }
-async function liveLoad(){
-  liveBusy(true,'Loading '+LIVE.report+'…');
+async function liveLoad(quiet){
+  if(!quiet) liveBusy(true,'Loading '+LIVE.report+'…');
   try{ const j=await liveCall('load'); liveBusy(false);
     if(!j.data){ LIVE.meta=null; LIVE.ready=true; D.attachments=j.attachments||[]; liveBar(); return liveGate('',{empty:true}); }
     D=j.data; D.attachments=j.attachments||[]; LIVE.meta=j.meta; LIVE.version=j.meta.version; LIVE.dirty=false; LIVE.ready=true;
     lset('kl-report',LIVE.report); history.replaceState(null,'','?r='+encodeURIComponent(LIVE.report));
-    liveUngate(); render(); liveBar(); toast(`Loaded ${LIVE.report} · version ${j.meta.version}`);
+    LIVE.conflict=null; LIVE.rev=0; liveUngate(); render(); liveBar(); if(!quiet) toast(`Loaded ${LIVE.report} · version ${j.meta.version}`);
   }catch(e){ liveBusy(false); liveGate('Could not load the report: '+e.message,{err:true}); }
 }
+let liveAutoT=null;
+function liveAutoSoon(ms){ clearTimeout(liveAutoT); liveAutoT=setTimeout(()=>{ if(LIVE.dirty&&LIVE.ready&&!LIVE.conflict) liveSave('auto'); }, ms||8000); }
 async function liveSave(force){
-  if(LIVE.busy) return; const note=force?LIVE._note:prompt('Save to team — short note for the Change Log (what did you change?)', ''); if(note===null) return; LIVE._note=note;
-  liveBusy(true,'Saving to Google Drive…');
+  const auto=force==='auto'; if(auto) force=false;
+  if(LIVE.saving){ if(auto||!force) { LIVE.again=true; return; } }
+  if(LIVE.busy&&!auto) return;
+  let note='Auto-save';
+  if(!auto){ note=force?LIVE._note:prompt('Save to team — optional note for the Change Log (what did you change?)', ''); if(note===null) return; LIVE._note=note=note||'Saved'; }
+  const rev=LIVE.rev||0; LIVE.saving=true; liveBar();
+  if(!auto) liveBusy(true,'Saving to Google Drive…');
   try{ D.savedAt=new Date().toISOString(); const data=Object.assign({},D); delete data.attachments;
     const j=await liveCall('save',{data,note,baseVersion:LIVE.version,force:!!force,title:(D.meta&&D.meta.reportTitle||'')+' · '+(D.meta&&D.meta.period||'')});
-    LIVE.meta=j.meta; LIVE.version=j.meta.version; LIVE.reports[LIVE.report]=j.meta; LIVE.dirty=false; liveBusy(false); liveBar(); toast(`Saved for the team · version ${j.meta.version}`);
+    LIVE.meta=j.meta; LIVE.version=j.meta.version; LIVE.reports[LIVE.report]=j.meta; LIVE.conflict=null; LIVE.saving=false;
+    LIVE.dirty=(LIVE.rev||0)!==rev; liveBusy(false); liveBar(); if(!auto) toast(`Saved for the team · version ${j.meta.version}`);
     try{ localStorage.removeItem(LS_KEY); }catch(e){}
-  }catch(e){ liveBusy(false);
+    if(LIVE.dirty||LIVE.again){ LIVE.again=false; if(LIVE.dirty) liveAutoSoon(3000); }
+  }catch(e){ liveBusy(false); LIVE.saving=false;
+    if(auto){ if(e.code==='conflict'){ LIVE.conflict=e.data.current||{}; liveBar(); toast(`${LIVE.conflict.by||'Someone'} saved a newer version — click ☁ Save to choose which to keep`); }
+      else { LIVE.offlineErr=e.message; liveBar(); liveAutoSoon(30000); } return; }
     if(e.code==='conflict'){ const c=e.data.current||{}; if(confirm(`${c.by||'Someone'} saved a newer version (v${c.version}) at ${new Date(c.at).toLocaleString('en-GB')} after you opened the report.\n\nOK = overwrite with your version\nCancel = keep theirs (reload the report; your unsaved edits are lost)`)) return liveSave(true); return liveLoad(); }
     alert('Could not save: '+e.message+'\nYour edits are still on this page — try again, or use Download HTML to keep a copy.'); }
 }
@@ -3289,7 +3300,7 @@ function liveNewMonth(){
   const old=D.meta.period; D=JSON.parse(JSON.stringify(D)); D.attachments=[];
   D.meta.period=per; if(D.meta.purpose) D.meta.purpose=String(D.meta.purpose).split(old).join(per);
   LIVE.report=id.trim(); LIVE.version=0; LIVE.meta=null; LIVE.dirty=true; history.replaceState(null,'','?r='+encodeURIComponent(LIVE.report)); lset('kl-report',LIVE.report);
-  render(); liveBar(); toast('New month created — update it, then Save to team');
+  render(); liveBar(); toast('New month created — saving to Google…'); liveAutoSoon(1000);
 }
 function liveMenu(){
   openModalHtml('Team copy',`<div class="lv-menu">
@@ -3328,7 +3339,7 @@ if(LIVE){ const _render=render; render=function(){ _render.apply(this,arguments)
   document.addEventListener('change',e=>{ const t=e.target;
     if(t.id==='lvReport'){ if(t.value==='__new') return liveNewMonth(); if(LIVE.dirty&&!confirm('You have unsaved changes. Switch month anyway?')) return liveBar(); LIVE.report=t.value; return liveLoad(); }
     if(t.id==='lgImport'&&t.files[0]){ const rd=new FileReader(); rd.onload=()=>{ try{ let txt=rd.result, obj; if(/^\s*</.test(txt)){ const m=txt.match(/<script id="report-data" type="application\/json">([\s\S]*?)<\/script>/); if(!m) throw new Error('No report data in that file.'); obj=JSON.parse(m[1]); } else obj=JSON.parse(txt);
-        if(!obj.meta||!obj.projects) throw new Error('This is not a monthly report file.'); const att=D.attachments||[]; D=obj; D.attachments=att; LIVE.dirty=true; liveUngate(); render(); liveBar(); toast('Report loaded — click ☁ Save to team to share it'); }catch(err){ alert('Could not load that file: '+err.message); } }; rd.readAsText(t.files[0]); }
+        if(!obj.meta||!obj.projects) throw new Error('This is not a monthly report file.'); const att=D.attachments||[]; D=obj; D.attachments=att; LIVE.dirty=true; liveUngate(); render(); liveBar(); LIVE.rev=(LIVE.rev||0)+1; toast('Report loaded — saving to Google…'); liveAutoSoon(1200); }catch(err){ alert('Could not load that file: '+err.message); } }; rd.readAsText(t.files[0]); }
   },true);
   document.addEventListener('keydown',e=>{ if(e.key==='Enter'&&e.target.closest&&e.target.closest('#liveGate')&&e.target.tagName==='INPUT'){ e.preventDefault(); const g=document.getElementById('lgGo'); if(g) g.click(); } if((e.ctrlKey||e.metaKey)&&e.key==='s'&&LIVE.ready){ e.preventDefault(); liveSave(false); } });
   window.addEventListener('beforeunload',e=>{ if(LIVE.dirty){ e.preventDefault(); e.returnValue=''; } });
@@ -3337,7 +3348,18 @@ if(LIVE){ const _render=render; render=function(){ _render.apply(this,arguments)
 /* ============================== start ============================== */
 try{ if(!LIVE){ const dr=JSON.parse(localStorage.getItem(LS_KEY)||'null'); if(dr && dr.meta && (!D.savedAt || dr.savedAt>D.savedAt) && JSON.stringify(Object.assign({},dr,{savedAt:0,_draft:0}))!==JSON.stringify(Object.assign({},D,{savedAt:0,_draft:0}))) draftOffer=dr; } }catch(e){}
 render();
-if(LIVE){ document.body.classList.add('lv-on'); liveBar(); liveConnect(); }
+if(LIVE){ document.body.classList.add('lv-on'); liveBar(); liveConnect();
+  $('#btnEdit').addEventListener('click',()=>{ setTimeout(()=>{ if(!EDIT&&LIVE.dirty&&LIVE.ready&&!LIVE.conflict) liveSave('auto'); },50); });
+  /* keep in step with the team: every 45 s check whether someone else saved a newer version */
+  setInterval(async()=>{ if(!LIVE.ready||LIVE.busy||LIVE.saving||document.hidden) return;
+    try{ const j=await liveCall('ping'); LIVE.reports=j.reports||LIVE.reports; const cur=(j.reports||{})[LIVE.report];
+      if(cur&&cur.version>LIVE.version){ if(!LIVE.dirty&&!EDIT){ const y=window.scrollY; await liveLoad(true); window.scrollTo(0,y); toast(`Updated with ${cur.by||'a team member'}'s changes (v${cur.version})`); }
+        else if(!LIVE.dirty&&EDIT){ LIVE.conflict=null; LIVE.newer=cur; toast(`${cur.by||'Someone'} saved v${cur.version} — leave Edit mode to see it`); }
+        else { LIVE.conflict=cur; liveBar(); } }
+      LIVE.offlineErr=null; liveBar();
+    }catch(e){} }, 45000);
+  document.addEventListener('visibilitychange',()=>{ if(document.hidden&&LIVE.dirty&&LIVE.ready&&!LIVE.conflict) liveSave('auto'); });
+}
 window.__report = { get data(){ return D; }, render, openModal, VIEW };
 })();
 </script>
